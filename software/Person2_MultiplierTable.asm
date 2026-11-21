@@ -5,10 +5,6 @@
 ; SCOMP doesn't have multiply/divide instructions, so we precompute
 ; all 30 payout values in RAM to avoid runtime math.
 ;
-; TODO for Person 2:
-; - Finish Table_StepNext lookup (need a clean way to load
-;   ValueTable[CurrentValueIdx] in SCOMP)
-; - Tune the LFSR PRNG seed and range so crashes feel fair
 ; ============================================================
 
 ; Reset table index to 0 and load starting money
@@ -54,12 +50,137 @@ SetCrashed:
         STORE   CrashFlag
         RETURN
 
-; Advance to next step (0..29) and update CurrentMoney
+; Advance one step and hold the final payout at index 29.
 Table_StepNext:
+        LOAD    CurrentValueIdx
+        SUB     P2_LastIndex
+        JNEG    P2_AdvanceStep
+        RETURN
+
+P2_AdvanceStep:
         LOAD    CurrentValueIdx
         ADD     P2_One
         STORE   CurrentValueIdx
-        ; TODO: implement indexed table fetch for CurrentMoney
+
+        ; Lab 8 SCOMP has no indirect load. Count down the index to
+        ; select a direct load from the payout table.
+        SUB     P2_One
+        JZERO   P2_Pay01
+        SUB     P2_One
+        JZERO   P2_Pay02
+        SUB     P2_One
+        JZERO   P2_Pay03
+        SUB     P2_One
+        JZERO   P2_Pay04
+        SUB     P2_One
+        JZERO   P2_Pay05
+        SUB     P2_One
+        JZERO   P2_Pay06
+        SUB     P2_One
+        JZERO   P2_Pay07
+        SUB     P2_One
+        JZERO   P2_Pay08
+        SUB     P2_One
+        JZERO   P2_Pay09
+        SUB     P2_One
+        JZERO   P2_Pay10
+        SUB     P2_One
+        JZERO   P2_Pay11
+        SUB     P2_One
+        JZERO   P2_Pay12
+        SUB     P2_One
+        JZERO   P2_Pay13
+        SUB     P2_One
+        JZERO   P2_Pay14
+        SUB     P2_One
+        JZERO   P2_Pay15
+        SUB     P2_One
+        JZERO   P2_Pay16
+        SUB     P2_One
+        JZERO   P2_Pay17
+        SUB     P2_One
+        JZERO   P2_Pay18
+        SUB     P2_One
+        JZERO   P2_Pay19
+        SUB     P2_One
+        JZERO   P2_Pay20
+        SUB     P2_One
+        JZERO   P2_Pay21
+        SUB     P2_One
+        JZERO   P2_Pay22
+        SUB     P2_One
+        JZERO   P2_Pay23
+        SUB     P2_One
+        JZERO   P2_Pay24
+        SUB     P2_One
+        JZERO   P2_Pay25
+        SUB     P2_One
+        JZERO   P2_Pay26
+        SUB     P2_One
+        JZERO   P2_Pay27
+        SUB     P2_One
+        JZERO   P2_Pay28
+
+P2_Pay29: LOAD  Value_29
+          JUMP  P2_StorePayout
+P2_Pay28: LOAD  Value_28
+          JUMP  P2_StorePayout
+P2_Pay27: LOAD  Value_27
+          JUMP  P2_StorePayout
+P2_Pay26: LOAD  Value_26
+          JUMP  P2_StorePayout
+P2_Pay25: LOAD  Value_25
+          JUMP  P2_StorePayout
+P2_Pay24: LOAD  Value_24
+          JUMP  P2_StorePayout
+P2_Pay23: LOAD  Value_23
+          JUMP  P2_StorePayout
+P2_Pay22: LOAD  Value_22
+          JUMP  P2_StorePayout
+P2_Pay21: LOAD  Value_21
+          JUMP  P2_StorePayout
+P2_Pay20: LOAD  Value_20
+          JUMP  P2_StorePayout
+P2_Pay19: LOAD  Value_19
+          JUMP  P2_StorePayout
+P2_Pay18: LOAD  Value_18
+          JUMP  P2_StorePayout
+P2_Pay17: LOAD  Value_17
+          JUMP  P2_StorePayout
+P2_Pay16: LOAD  Value_16
+          JUMP  P2_StorePayout
+P2_Pay15: LOAD  Value_15
+          JUMP  P2_StorePayout
+P2_Pay14: LOAD  Value_14
+          JUMP  P2_StorePayout
+P2_Pay13: LOAD  Value_13
+          JUMP  P2_StorePayout
+P2_Pay12: LOAD  Value_12
+          JUMP  P2_StorePayout
+P2_Pay11: LOAD  Value_11
+          JUMP  P2_StorePayout
+P2_Pay10: LOAD  Value_10
+          JUMP  P2_StorePayout
+P2_Pay09: LOAD  Value_09
+          JUMP  P2_StorePayout
+P2_Pay08: LOAD  Value_08
+          JUMP  P2_StorePayout
+P2_Pay07: LOAD  Value_07
+          JUMP  P2_StorePayout
+P2_Pay06: LOAD  Value_06
+          JUMP  P2_StorePayout
+P2_Pay05: LOAD  Value_05
+          JUMP  P2_StorePayout
+P2_Pay04: LOAD  Value_04
+          JUMP  P2_StorePayout
+P2_Pay03: LOAD  Value_03
+          JUMP  P2_StorePayout
+P2_Pay02: LOAD  Value_02
+          JUMP  P2_StorePayout
+P2_Pay01: LOAD  Value_01
+
+P2_StorePayout:
+        STORE   CurrentMoney
         RETURN
 
 Mask31:         DW      &H001F
@@ -68,6 +189,7 @@ MaxLimit:       DW      30
 MaxVal:         DW      28
 P2_Zero:        DW      0
 P2_One:         DW      1
+P2_LastIndex:   DW      29
 
 ; Precomputed 30-step payout table (wager = 10, climbs to 500)
 Value_00: DW  10
