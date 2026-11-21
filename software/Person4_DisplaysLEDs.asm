@@ -1,8 +1,3 @@
-; I'll take this one (TYLER)
-
-
-
-
 ; ============================================================
 ; Person 4 - LEDs & HEX Displays
 ;
@@ -112,12 +107,29 @@ Display_UpdateHEX:
 Display_AnimCashOut:
         LOAD    Bar10
         OUT     LEDs
+        CALL    Delay
+        LOAD    P4_Zero
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Bar10
+        OUT     LEDs
+        CALL    Delay
         RETURN
 
 ; Crash strobe (alternating pattern)
 Display_AnimCrash:
         LOAD    Hazard1
         OUT     LEDs
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Hazard1
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
         RETURN
 
 ; Bankrupt (all LEDs off, clear HEX)
@@ -127,6 +139,31 @@ Display_AnimBankrupt:
         OUT     Hex0_1
         OUT     Hex2_3
         RETURN
+
+Delay:
+        LOAD    OuterLoops
+        STORE   OuterCount
+OuterLoop:
+        LOAD    InnerLoops
+        STORE   InnerCount
+InnerLoop:
+        LOAD    InnerCount
+        SUB     One
+        STORE   InnerCount
+        JPOS    InnerLoop
+
+        LOAD    OuterCount
+        SUB     One
+        STORE   OuterCount
+        JPOS    OuterLoop
+        RETURN
+
+; Inner * Outer = 1 million        
+OuterLoops: DW 100
+InnerLoops: DW 10000
+OuterCount: DW 0
+InnerCount: DW 1
+One:        DW  1
 
 Bar1:       DW  &H0001
 Bar2:       DW  &H0003
