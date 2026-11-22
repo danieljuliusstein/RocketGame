@@ -26,6 +26,13 @@
 ;      single return register (no call stack), so a CALL made from
 ;      inside another CALLed routine would return to the wrong
 ;      instruction and hang.
+;   4. Person 2's payout cascade and LFSR crash cutoff are taken
+;      verbatim from Person2_MultiplierTable.asm (Tony's version).
+;   5. Person 4's animation delays are CALLed from inside the
+;      animations, so the state machine tail-jumps into an
+;      animation instead of CALLing it. Same single-return-register
+;      rule as (3): a nested CALL would lose the way back to the
+;      main loop.
 ;
 ; Build: scasm RocketGame.asm   ->  RocketGame.mif
 ; ============================================================
@@ -117,8 +124,7 @@ StateCashOut:
         LOAD    BankedCredits
         ADD     CurrentMoney
         STORE   BankedCredits
-        CALL    Display_AnimCashOut
-        JUMP    StateReplay
+        JUMP    Display_AnimCashOut    ; animation jumps back to StateReplay
 
 ; Bust: forfeit stake and freeze timer
 StateBustTimeout:
@@ -127,8 +133,9 @@ StateBustCrash:
         LOAD    BankedCredits
         SUB     CurrentStake
         STORE   BankedCredits
-        CALL    Display_AnimCrash
+        JUMP    Display_AnimCrash      ; animation jumps to BustAfterCrash
 
+BustAfterCrash:
         ; Check if bankrupt
         LOAD    BankedCredits
         JPOS    StateReplay
@@ -170,7 +177,6 @@ InitialStake:    DW     10
 ; Person 5 pacing / integration constants
 LastStepTick:    DW     0       ; Timer value at the last payout step
 PaceInterval:    DW     2       ; Deciseconds per step (60 ticks / 30)
-MaxIdx29:        DW     29      ; Highest valid table index
 P5_Zero:         DW     0
 
 ; ============================================================
@@ -251,7 +257,6 @@ P1_One:  DW      1
 ; SCOMP doesn't have multiply/divide instructions, so all 30
 ; payout values are precomputed in RAM to avoid runtime math.
 ; ============================================================
-
 ; Reset table index to 0 and load starting money
 Table_Init:
         LOAD    P2_Zero
@@ -261,24 +266,36 @@ Table_Init:
         STORE   CurrentMoney
         RETURN
 
-; Roll a random crash cutoff between 8 and 30 using LFSR
+; Pick a cutoff from 8 through 30 once per launch. Since payouts stop
+; at index 29, a cutoff of 30 lets the hardware timer end the round.
 Table_GenCrashThreshold:
         LOAD    PRNG_Seed
+        JZERO   P2_RestoreSeed
+        JUMP    P2_AdvanceLfsr
+
+P2_RestoreSeed:
+        LOAD    P2_DefaultSeed ; zero is a locked state for the LFSR
+
+P2_AdvanceLfsr:
+        ; Left-shift Galois LFSR. Apply feedback if the old MSB was set.
+        JNEG    P2_ApplyFeedback
         SHIFT   1
-        ADD     PRNG_Seed
-        ADD     P2_One
+        JUMP    P2_SampleLfsr
+
+P2_ApplyFeedback:
+        SHIFT   1
+        XOR     P2_LfsrMask
+
+P2_SampleLfsr:
         STORE   PRNG_Seed
+        AND     P2_SampleMask
+        SUB     P2_SampleCount
+        JNEG    P2_AcceptSample
+        JUMP    Table_GenCrashThreshold ; discard 23..31, then draw again
 
-        AND     Mask31
-        ADD     MinOffset
-        SUB     MaxLimit
-        JPOS    CapCrash
-        ADD     MaxLimit
-        STORE   CrashThreshold
-        RETURN
-
-CapCrash:
-        LOAD    MaxVal
+P2_AcceptSample:
+        ADD     P2_SampleCount
+        ADD     P2_MinCrash
         STORE   CrashThreshold
         RETURN
 
@@ -295,241 +312,147 @@ SetCrashed:
         STORE   CrashFlag
         RETURN
 
-; Advance to next step (clamped at 29) and update CurrentMoney
+; Advance one step and hold the final payout at index 29.
 Table_StepNext:
+        LOAD    CurrentValueIdx
+        SUB     P2_LastIndex
+        JNEG    P2_AdvanceStep
+        RETURN
+
+P2_AdvanceStep:
         LOAD    CurrentValueIdx
         ADD     P2_One
         STORE   CurrentValueIdx
-        SUB     MaxIdx29
-        JPOS    PinIndex
-        JUMP    Table_LookupMoney
 
-PinIndex:
-        LOAD    MaxIdx29
-        STORE   CurrentValueIdx
-        JUMP    Table_LookupMoney
+        ; Lab 8 SCOMP has no indirect load. Count down the index to
+        ; select a direct load from the payout table.
+        SUB     P2_One
+        JZERO   P2_Pay01
+        SUB     P2_One
+        JZERO   P2_Pay02
+        SUB     P2_One
+        JZERO   P2_Pay03
+        SUB     P2_One
+        JZERO   P2_Pay04
+        SUB     P2_One
+        JZERO   P2_Pay05
+        SUB     P2_One
+        JZERO   P2_Pay06
+        SUB     P2_One
+        JZERO   P2_Pay07
+        SUB     P2_One
+        JZERO   P2_Pay08
+        SUB     P2_One
+        JZERO   P2_Pay09
+        SUB     P2_One
+        JZERO   P2_Pay10
+        SUB     P2_One
+        JZERO   P2_Pay11
+        SUB     P2_One
+        JZERO   P2_Pay12
+        SUB     P2_One
+        JZERO   P2_Pay13
+        SUB     P2_One
+        JZERO   P2_Pay14
+        SUB     P2_One
+        JZERO   P2_Pay15
+        SUB     P2_One
+        JZERO   P2_Pay16
+        SUB     P2_One
+        JZERO   P2_Pay17
+        SUB     P2_One
+        JZERO   P2_Pay18
+        SUB     P2_One
+        JZERO   P2_Pay19
+        SUB     P2_One
+        JZERO   P2_Pay20
+        SUB     P2_One
+        JZERO   P2_Pay21
+        SUB     P2_One
+        JZERO   P2_Pay22
+        SUB     P2_One
+        JZERO   P2_Pay23
+        SUB     P2_One
+        JZERO   P2_Pay24
+        SUB     P2_One
+        JZERO   P2_Pay25
+        SUB     P2_One
+        JZERO   P2_Pay26
+        SUB     P2_One
+        JZERO   P2_Pay27
+        SUB     P2_One
+        JZERO   P2_Pay28
 
-; SCOMP has no indexed addressing, so CurrentMoney is fetched with
-; an exact-match cascade on CurrentValueIdx (0..29).
-Table_LookupMoney:
-        LOAD    CurrentValueIdx
-        SUB     Idx_00
-        JZERO   Money_00
-        LOAD    CurrentValueIdx
-        SUB     Idx_01
-        JZERO   Money_01
-        LOAD    CurrentValueIdx
-        SUB     Idx_02
-        JZERO   Money_02
-        LOAD    CurrentValueIdx
-        SUB     Idx_03
-        JZERO   Money_03
-        LOAD    CurrentValueIdx
-        SUB     Idx_04
-        JZERO   Money_04
-        LOAD    CurrentValueIdx
-        SUB     Idx_05
-        JZERO   Money_05
-        LOAD    CurrentValueIdx
-        SUB     Idx_06
-        JZERO   Money_06
-        LOAD    CurrentValueIdx
-        SUB     Idx_07
-        JZERO   Money_07
-        LOAD    CurrentValueIdx
-        SUB     Idx_08
-        JZERO   Money_08
-        LOAD    CurrentValueIdx
-        SUB     Idx_09
-        JZERO   Money_09
-        LOAD    CurrentValueIdx
-        SUB     Idx_10
-        JZERO   Money_10
-        LOAD    CurrentValueIdx
-        SUB     Idx_11
-        JZERO   Money_11
-        LOAD    CurrentValueIdx
-        SUB     Idx_12
-        JZERO   Money_12
-        LOAD    CurrentValueIdx
-        SUB     Idx_13
-        JZERO   Money_13
-        LOAD    CurrentValueIdx
-        SUB     Idx_14
-        JZERO   Money_14
-        LOAD    CurrentValueIdx
-        SUB     Idx_15
-        JZERO   Money_15
-        LOAD    CurrentValueIdx
-        SUB     Idx_16
-        JZERO   Money_16
-        LOAD    CurrentValueIdx
-        SUB     Idx_17
-        JZERO   Money_17
-        LOAD    CurrentValueIdx
-        SUB     Idx_18
-        JZERO   Money_18
-        LOAD    CurrentValueIdx
-        SUB     Idx_19
-        JZERO   Money_19
-        LOAD    CurrentValueIdx
-        SUB     Idx_20
-        JZERO   Money_20
-        LOAD    CurrentValueIdx
-        SUB     Idx_21
-        JZERO   Money_21
-        LOAD    CurrentValueIdx
-        SUB     Idx_22
-        JZERO   Money_22
-        LOAD    CurrentValueIdx
-        SUB     Idx_23
-        JZERO   Money_23
-        LOAD    CurrentValueIdx
-        SUB     Idx_24
-        JZERO   Money_24
-        LOAD    CurrentValueIdx
-        SUB     Idx_25
-        JZERO   Money_25
-        LOAD    CurrentValueIdx
-        SUB     Idx_26
-        JZERO   Money_26
-        LOAD    CurrentValueIdx
-        SUB     Idx_27
-        JZERO   Money_27
-        LOAD    CurrentValueIdx
-        SUB     Idx_28
-        JZERO   Money_28
-        JUMP    Money_29
+P2_Pay29: LOAD  Value_29
+          JUMP  P2_StorePayout
+P2_Pay28: LOAD  Value_28
+          JUMP  P2_StorePayout
+P2_Pay27: LOAD  Value_27
+          JUMP  P2_StorePayout
+P2_Pay26: LOAD  Value_26
+          JUMP  P2_StorePayout
+P2_Pay25: LOAD  Value_25
+          JUMP  P2_StorePayout
+P2_Pay24: LOAD  Value_24
+          JUMP  P2_StorePayout
+P2_Pay23: LOAD  Value_23
+          JUMP  P2_StorePayout
+P2_Pay22: LOAD  Value_22
+          JUMP  P2_StorePayout
+P2_Pay21: LOAD  Value_21
+          JUMP  P2_StorePayout
+P2_Pay20: LOAD  Value_20
+          JUMP  P2_StorePayout
+P2_Pay19: LOAD  Value_19
+          JUMP  P2_StorePayout
+P2_Pay18: LOAD  Value_18
+          JUMP  P2_StorePayout
+P2_Pay17: LOAD  Value_17
+          JUMP  P2_StorePayout
+P2_Pay16: LOAD  Value_16
+          JUMP  P2_StorePayout
+P2_Pay15: LOAD  Value_15
+          JUMP  P2_StorePayout
+P2_Pay14: LOAD  Value_14
+          JUMP  P2_StorePayout
+P2_Pay13: LOAD  Value_13
+          JUMP  P2_StorePayout
+P2_Pay12: LOAD  Value_12
+          JUMP  P2_StorePayout
+P2_Pay11: LOAD  Value_11
+          JUMP  P2_StorePayout
+P2_Pay10: LOAD  Value_10
+          JUMP  P2_StorePayout
+P2_Pay09: LOAD  Value_09
+          JUMP  P2_StorePayout
+P2_Pay08: LOAD  Value_08
+          JUMP  P2_StorePayout
+P2_Pay07: LOAD  Value_07
+          JUMP  P2_StorePayout
+P2_Pay06: LOAD  Value_06
+          JUMP  P2_StorePayout
+P2_Pay05: LOAD  Value_05
+          JUMP  P2_StorePayout
+P2_Pay04: LOAD  Value_04
+          JUMP  P2_StorePayout
+P2_Pay03: LOAD  Value_03
+          JUMP  P2_StorePayout
+P2_Pay02: LOAD  Value_02
+          JUMP  P2_StorePayout
+P2_Pay01: LOAD  Value_01
 
-Money_00: LOAD  Value_00
-          STORE CurrentMoney
-          RETURN
-Money_01: LOAD  Value_01
-          STORE CurrentMoney
-          RETURN
-Money_02: LOAD  Value_02
-          STORE CurrentMoney
-          RETURN
-Money_03: LOAD  Value_03
-          STORE CurrentMoney
-          RETURN
-Money_04: LOAD  Value_04
-          STORE CurrentMoney
-          RETURN
-Money_05: LOAD  Value_05
-          STORE CurrentMoney
-          RETURN
-Money_06: LOAD  Value_06
-          STORE CurrentMoney
-          RETURN
-Money_07: LOAD  Value_07
-          STORE CurrentMoney
-          RETURN
-Money_08: LOAD  Value_08
-          STORE CurrentMoney
-          RETURN
-Money_09: LOAD  Value_09
-          STORE CurrentMoney
-          RETURN
-Money_10: LOAD  Value_10
-          STORE CurrentMoney
-          RETURN
-Money_11: LOAD  Value_11
-          STORE CurrentMoney
-          RETURN
-Money_12: LOAD  Value_12
-          STORE CurrentMoney
-          RETURN
-Money_13: LOAD  Value_13
-          STORE CurrentMoney
-          RETURN
-Money_14: LOAD  Value_14
-          STORE CurrentMoney
-          RETURN
-Money_15: LOAD  Value_15
-          STORE CurrentMoney
-          RETURN
-Money_16: LOAD  Value_16
-          STORE CurrentMoney
-          RETURN
-Money_17: LOAD  Value_17
-          STORE CurrentMoney
-          RETURN
-Money_18: LOAD  Value_18
-          STORE CurrentMoney
-          RETURN
-Money_19: LOAD  Value_19
-          STORE CurrentMoney
-          RETURN
-Money_20: LOAD  Value_20
-          STORE CurrentMoney
-          RETURN
-Money_21: LOAD  Value_21
-          STORE CurrentMoney
-          RETURN
-Money_22: LOAD  Value_22
-          STORE CurrentMoney
-          RETURN
-Money_23: LOAD  Value_23
-          STORE CurrentMoney
-          RETURN
-Money_24: LOAD  Value_24
-          STORE CurrentMoney
-          RETURN
-Money_25: LOAD  Value_25
-          STORE CurrentMoney
-          RETURN
-Money_26: LOAD  Value_26
-          STORE CurrentMoney
-          RETURN
-Money_27: LOAD  Value_27
-          STORE CurrentMoney
-          RETURN
-Money_28: LOAD  Value_28
-          STORE CurrentMoney
-          RETURN
-Money_29: LOAD  Value_29
-          STORE CurrentMoney
-          RETURN
+P2_StorePayout:
+        STORE   CurrentMoney
+        RETURN
 
-Mask31:         DW      &H001F
-MinOffset:      DW      8
-MaxLimit:       DW      30
-MaxVal:         DW      28
+P2_DefaultSeed: DW      &HACE1
+P2_LfsrMask:    DW      &H002D
+P2_SampleMask:  DW      &H001F
+P2_SampleCount: DW      23
+P2_MinCrash:    DW      8
 P2_Zero:        DW      0
 P2_One:         DW      1
-
-; Index constants for the lookup cascade
-Idx_00: DW 0
-Idx_01: DW 1
-Idx_02: DW 2
-Idx_03: DW 3
-Idx_04: DW 4
-Idx_05: DW 5
-Idx_06: DW 6
-Idx_07: DW 7
-Idx_08: DW 8
-Idx_09: DW 9
-Idx_10: DW 10
-Idx_11: DW 11
-Idx_12: DW 12
-Idx_13: DW 13
-Idx_14: DW 14
-Idx_15: DW 15
-Idx_16: DW 16
-Idx_17: DW 17
-Idx_18: DW 18
-Idx_19: DW 19
-Idx_20: DW 20
-Idx_21: DW 21
-Idx_22: DW 22
-Idx_23: DW 23
-Idx_24: DW 24
-Idx_25: DW 25
-Idx_26: DW 26
-Idx_27: DW 27
-Idx_28: DW 28
-Idx_29: DW 29
+P2_LastIndex:   DW      29
 
 ; Precomputed 30-step payout table (wager = 10, climbs to 500)
 Value_00: DW  10
@@ -694,7 +617,6 @@ P3_One:  DW 1
 ;   0x004 (Hex0_1):  Remaining deciseconds from timer API
 ;   0x005 (Hex2_3):  Current money / bank balance
 ; ============================================================
-
 LEDs:           EQU     &H001
 Hex0_1:         EQU     &H004
 Hex2_3:         EQU     &H005
@@ -790,13 +712,30 @@ Display_UpdateHEX:
 Display_AnimCashOut:
         LOAD    Bar10
         OUT     LEDs
-        RETURN
+        CALL    Delay
+        LOAD    P4_Zero
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Bar10
+        OUT     LEDs
+        CALL    Delay
+        JUMP    StateReplay            ; tail back to the main loop
 
 ; Crash strobe (alternating pattern)
 Display_AnimCrash:
         LOAD    Hazard1
         OUT     LEDs
-        RETURN
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Hazard1
+        OUT     LEDs
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
+        JUMP    BustAfterCrash         ; tail back to the main loop
 
 ; Bankrupt (all LEDs off, clear HEX)
 Display_AnimBankrupt:
@@ -805,6 +744,31 @@ Display_AnimBankrupt:
         OUT     Hex0_1
         OUT     Hex2_3
         RETURN
+
+Delay:
+        LOAD    OuterLoops
+        STORE   OuterCount
+OuterLoop:
+        LOAD    InnerLoops
+        STORE   InnerCount
+InnerLoop:
+        LOAD    InnerCount
+        SUB     One
+        STORE   InnerCount
+        JPOS    InnerLoop
+
+        LOAD    OuterCount
+        SUB     One
+        STORE   OuterCount
+        JPOS    OuterLoop
+        RETURN
+
+; Inner * Outer = 1 million        
+OuterLoops: DW 100
+InnerLoops: DW 10000
+OuterCount: DW 0
+InnerCount: DW 1
+One:        DW  1
 
 Bar1:       DW  &H0001
 Bar2:       DW  &H0003
