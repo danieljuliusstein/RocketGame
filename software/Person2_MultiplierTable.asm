@@ -16,24 +16,36 @@ Table_Init:
         STORE   CurrentMoney
         RETURN
 
-; Roll a random crash cutoff between 8 and 30 using LFSR
+; Pick a cutoff from 8 through 30 once per launch. Since payouts stop
+; at index 29, a cutoff of 30 lets the hardware timer end the round.
 Table_GenCrashThreshold:
         LOAD    PRNG_Seed
+        JZERO   P2_RestoreSeed
+        JUMP    P2_AdvanceLfsr
+
+P2_RestoreSeed:
+        LOAD    P2_DefaultSeed ; zero is a locked state for the LFSR
+
+P2_AdvanceLfsr:
+        ; Left-shift Galois LFSR. Apply feedback if the old MSB was set.
+        JNEG    P2_ApplyFeedback
         SHIFT   1
-        ADD     PRNG_Seed
-        ADD     P2_One
+        JUMP    P2_SampleLfsr
+
+P2_ApplyFeedback:
+        SHIFT   1
+        XOR     P2_LfsrMask
+
+P2_SampleLfsr:
         STORE   PRNG_Seed
+        AND     P2_SampleMask
+        SUB     P2_SampleCount
+        JNEG    P2_AcceptSample
+        JUMP    Table_GenCrashThreshold ; discard 23..31, then draw again
 
-        AND     Mask31
-        ADD     MinOffset
-        SUB     MaxLimit
-        JPOS    CapCrash
-        ADD     MaxLimit
-        STORE   CrashThreshold
-        RETURN
-
-CapCrash:
-        LOAD    MaxVal
+P2_AcceptSample:
+        ADD     P2_SampleCount
+        ADD     P2_MinCrash
         STORE   CrashThreshold
         RETURN
 
@@ -183,10 +195,11 @@ P2_StorePayout:
         STORE   CurrentMoney
         RETURN
 
-Mask31:         DW      &H001F
-MinOffset:      DW      8
-MaxLimit:       DW      30
-MaxVal:         DW      28
+P2_DefaultSeed: DW      &HACE1
+P2_LfsrMask:    DW      &H002D
+P2_SampleMask:  DW      &H001F
+P2_SampleCount: DW      23
+P2_MinCrash:    DW      8
 P2_Zero:        DW      0
 P2_One:         DW      1
 P2_LastIndex:   DW      29
