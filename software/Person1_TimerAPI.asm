@@ -22,7 +22,7 @@
 ; Verification
 ; - Quartus load/pause/readback test passed with 60 ticks
 ; - Simulation showed count holding at 3 during pause, continuing after
-;   resume, and returning to 4 after reset
+;   resume, DONE was set at 0, and returning to 4 after reset cleared DONE
 ; ============================================================
 
 TimerValue:      EQU     &H070
