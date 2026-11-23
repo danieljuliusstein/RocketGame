@@ -1,116 +1,125 @@
 ; ============================================================
 ; Person 5 - Rocket Game: Main Loop & Integration
 ;
-; Push-your-luck survival rocket game for SCOMP, driven by our
-; pausable countdown timer peripheral (0x070 / 0x071).
+; Push-your-luck rocket game for SCOMP on the DE10-Lite.
+; You start with 100 credits and every round costs a 10 credit
+; stake. The rocket climbs through 30 payout steps. Cash out
+; before it crashes (or the clock runs out) and you keep the
+; payout. Crash first and you lose your stake. Hit 0 credits
+; and you're bankrupt.
 ;
-; This is the merged build. It contains:
-;   Person 5 - state machine, pacing, integration
-;   Person 1 - timer API                 (0x070 / 0x071)
-;   Person 2 - 30-step payout table + crash cutoff
-;   Person 3 - switch edge detection / pause interlock
-;   Person 4 - LED thermometer + HEX displays
+; HOW TO PLAY (switches on the board)
+;   SW0  Launch the rocket (flip it up)
+;   SW1  Cash out (flip it up)
+;   SW2  Pause. Up = paused, down = running again
+;   SW3  Play again after a round ends (flip it up)
+;   Tip: every switch counts when it gets flipped UP, so flip a
+;   switch back down before using it again.
 ;
-; Person 5 integration changes:
-;   1. Pacing: the payout index now advances one step every 2
-;      deciseconds (60 ticks / 30 steps) instead of every loop
-;      iteration. LastStepTick anchors the last step; a new step
-;      is taken once the timer has dropped 2 ticks below it.
-;      The loop keeps polling switches while it waits, so SW1/SW2
-;      stay responsive between steps.
-;   2. Finished Person 2's Table_StepNext indexed fetch with a
-;      compare cascade (SCOMP has no indexed addressing) and
-;      pinned the index at 29 so a round cannot run off the table.
-;   3. Inputs_CheckPauseToggle writes the timer port directly
-;      instead of CALLing Timer_Pause/Timer_Resume. SCOMP keeps a
-;      single return register (no call stack), so a CALL made from
-;      inside another CALLed routine would return to the wrong
-;      instruction and hang.
-;   4. Person 2's payout cascade and LFSR crash cutoff are taken
-;      verbatim from Person2_MultiplierTable.asm (Tony's version).
-;   5. Person 4's animation delays are CALLed from inside the
-;      animations, so the state machine tail-jumps into an
-;      animation instead of CALLing it. Same single-return-register
-;      rule as (3): a nested CALL would lose the way back to the
-;      main loop.
+; WHAT THE BOARD SHOWS
+;   LEDs        10 LED thermometer, 1 more LED every 3 steps
+;   HEX3..HEX0  current payout during a round, bank between rounds
+;   HEX5..HEX4  time left in tenths of a second (60 = 6.0 sec)
+;   Both HEX ports show normal decimal numbers.
 ;
-; Build: scasm RocketGame.asm   ->  RocketGame.mif
+; HOW THIS FILE IS PUT TOGETHER
+;   Person 5 - main loop and game states      (this part)
+;   Person 1 - timer API         (0x070 / 0x071)
+;   Person 2 - payout table + random crash point
+;   Person 3 - switch reading / edge detection / pause
+;   Person 4 - LEDs, HEX displays, animations
+;
+; Build: scasm RocketGame.asm  ->  RocketGame.mif
 ; ============================================================
 
         ORG     0
 
-; Init bankroll, stake, and round state
+; ------------------------------------------------------------
+; Power up. Set the bank and stake, clear everything else.
+; ------------------------------------------------------------
 MainInit:
         LOAD    InitialBank
         STORE   BankedCredits
         LOAD    InitialStake
         STORE   CurrentStake
-        LOAD    P5_Zero
+        LOAD    Zero
         STORE   GamePaused
         STORE   CrashFlag
         STORE   CurrentValueIdx
         STORE   CurrentMoney
         STORE   LastStepTick
+        STORE   NewPresses
+
+        ; Remember where the switches are right now. That way a
+        ; switch that is already up at power-up doesn't count as
+        ; a "press" and start the game by itself.
+        IN      Switches
+        STORE   PrevSwitches
+
         CALL    Timer_LoadDuration
 
-; Wait for SW0 press to launch
+; ------------------------------------------------------------
+; Waiting at the pad. Show the bank and wait for SW0.
+; ------------------------------------------------------------
 WaitLaunch:
-        LOAD    BankedCredits
-        OUT     Hex2_3
-        LOAD    P5_Zero
+        CALL    Display_ShowBank
+        LOAD    Zero
         OUT     LEDs
 
+WaitLaunchLoop:
         CALL    Inputs_Poll
         CALL    Inputs_CheckStart
-        JZERO   WaitLaunch
+        JZERO   WaitLaunchLoop
 
-        ; Launch!
+        ; Launch! Fresh table, fresh crash point, fresh 6 seconds.
         CALL    Table_Init
         CALL    Table_GenCrashThreshold
         CALL    Timer_LoadDuration
         LOAD    DefaultDuration
-        STORE   LastStepTick
+        STORE   LastStepTick            ; first step is measured from 6.0 sec
         CALL    Timer_Start
 
-        ; Show the loaded clock and the first payout right away
+        ; Put the starting numbers on the board right away
         CALL    Timer_PollStatus
         CALL    Display_UpdateHEX
         CALL    Display_UpdateLEDMoney
 
-; Running loop
+; ------------------------------------------------------------
+; The round. This loop runs over and over until you cash out,
+; crash, or the timer hits 0.
+; ------------------------------------------------------------
 GameLoop:
         CALL    Inputs_Poll
-        CALL    Inputs_CheckPauseToggle
+        CALL    Inputs_CheckPause
 
-        ; If paused, don't advance
+        ; If we're paused, just sit here and keep watching SW2
         LOAD    GamePaused
         JPOS    GameLoop
 
-        ; Check cash out
+        ; Did the player cash out?
         CALL    Inputs_CheckCashOut
         JPOS    StateCashOut
 
-        ; Read timer peripheral status
+        ; Ask the timer how much time is left
         CALL    Timer_PollStatus
 
-        ; Timeout check (DONE bit set)
+        ; Timer ran all the way down = bust
         LOAD    TimerDoneFlag
         JPOS    StateBustTimeout
 
-        ; Random crash check
+        ; Did we reach the secret crash step?
         CALL    Table_CheckCrash
         LOAD    CrashFlag
         JPOS    StateBustCrash
 
-        ; Pacing: step once the timer is 2 ticks below the anchor
+        ; Pacing. We want one payout step every 2 tenths of a
+        ; second (60 ticks / 30 steps). So we only step once the
+        ; timer has dropped 2 ticks below where the last step happened.
         LOAD    LastStepTick
         SUB     PaceInterval
         SUB     RemainingTicks
-        JPOS    PaceStep
-        JZERO   PaceStep
-        JUMP    GameLoop
+        JNEG    GameLoop                ; not enough time has passed yet
 
-PaceStep:
         CALL    Table_StepNext
         LOAD    RemainingTicks
         STORE   LastStepTick
@@ -118,119 +127,146 @@ PaceStep:
         CALL    Display_UpdateHEX
         JUMP    GameLoop
 
-; Cash out: bank profit and freeze timer
+; ------------------------------------------------------------
+; Cash out: freeze the clock and bank the profit.
+; Profit = payout - stake. So cashing out on the very first
+; step just gets your stake back (no free money).
+; ------------------------------------------------------------
 StateCashOut:
         CALL    Timer_Pause
         LOAD    BankedCredits
         ADD     CurrentMoney
+        SUB     CurrentStake
         STORE   BankedCredits
-        JUMP    Display_AnimCashOut    ; animation jumps back to StateReplay
+        CALL    Display_AnimCashOut
+        JUMP    StateReplay
 
-; Bust: forfeit stake and freeze timer
+; ------------------------------------------------------------
+; Bust (crash or timeout): freeze the clock and lose the stake.
+; ------------------------------------------------------------
 StateBustTimeout:
 StateBustCrash:
         CALL    Timer_Pause
         LOAD    BankedCredits
         SUB     CurrentStake
         STORE   BankedCredits
-        JUMP    Display_AnimCrash      ; animation jumps to BustAfterCrash
+        CALL    Display_AnimCrash
 
-BustAfterCrash:
-        ; Check if bankrupt
+        ; Out of money? Then it's game over.
         LOAD    BankedCredits
         JPOS    StateReplay
-        JZERO   StateBankrupt
         JUMP    StateBankrupt
 
-; Wait for SW3 to start new round
+; ------------------------------------------------------------
+; Round is over. Show the bank and wait for SW3 to go again.
+; ------------------------------------------------------------
 StateReplay:
+        CALL    Display_ShowBank
+
+StateReplayLoop:
         CALL    Inputs_Poll
         CALL    Inputs_CheckReset
-        JZERO   StateReplay
+        JZERO   StateReplayLoop
 
-        LOAD    P5_Zero
+        LOAD    Zero
         STORE   GamePaused
         CALL    Timer_Reset
         JUMP    WaitLaunch
 
-; Out of money
+; ------------------------------------------------------------
+; Bankrupt. Show 0 and flash the hazard lights forever.
+; Press the reset button on the board to start over.
+; ------------------------------------------------------------
 StateBankrupt:
+        CALL    Display_ShowBank        ; bank is 0 or less, so this shows 0000
         CALL    Display_AnimBankrupt
 Halt:
         JUMP    Halt
 
-; Shared RAM variables (team contract - do not rename)
-BankedCredits:   DW     100
-CurrentStake:    DW     10
-CurrentValueIdx: DW     0
-CurrentMoney:    DW     0
-CrashThreshold:  DW     24
-RemainingTicks:  DW     0
-TimerDoneFlag:   DW     0
-GamePaused:      DW     0
-CrashFlag:       DW     0
-PRNG_Seed:       DW     &HACE1
+; ------------------------------------------------------------
+; Shared variables. Everybody's code reads and writes these,
+; so please don't rename them.
+; ------------------------------------------------------------
+BankedCredits:   DW     100             ; money in the bank
+CurrentStake:    DW     10              ; what a round costs you
+CurrentValueIdx: DW     0               ; which payout step we're on (0..29)
+CurrentMoney:    DW     0               ; payout at the current step
+CrashThreshold:  DW     24              ; the step where the rocket blows up
+RemainingTicks:  DW     0               ; time left in tenths of a second
+TimerDoneFlag:   DW     0               ; 1 when the timer hit 0
+GamePaused:      DW     0               ; 1 when SW2 has us paused
+CrashFlag:       DW     0               ; 1 when we reached the crash step
+PRNG_Seed:       DW     &HACE1          ; random number state (never 0)
 
 InitialBank:     DW     100
 InitialStake:    DW     10
 
-; Person 5 pacing / integration constants
-LastStepTick:    DW     0       ; Timer value at the last payout step
-PaceInterval:    DW     2       ; Deciseconds per step (60 ticks / 30)
-P5_Zero:         DW     0
+; Pacing stuff
+LastStepTick:    DW     0               ; timer value at the last payout step
+PaceInterval:    DW     2               ; tenths of a second per step
+
+; Plain numbers everybody shares
+Zero:            DW     0
+One:             DW     1
 
 ; ============================================================
 ; Person 1 - Timer API Interface
 ;
-;   0x070 (TimerValue):   write loads duration (in 0.1s ticks)
-;                         read gets remaining deciseconds
-;   0x071 (TimerControl): write 0 = pause, 1 = start, 2 = reset
-;                         read bit 0 = running, bit 1 = done
+; This talks to our pausable countdown timer in the hardware:
+;   0x070 (TimerValue):   write = load a new time (tenths of a sec)
+;                         read  = time remaining
+;   0x071 (TimerControl): write 0 = pause, 1 = start/resume, 2 = reset
+;                         read  = status. bit 0 = running, bit 1 = done
+;
+; Quick facts:
+;   - Every routine here is allowed to change AC.
+;   - Timer_PollStatus fills in RemainingTicks and TimerDoneFlag
+;     (DONE is 0 or 1) so the rest of the code never touches the
+;     hardware directly.
 ; ============================================================
 
 TimerValue:      EQU     &H070
 TimerControl:    EQU     &H071
 
-TimerDoneMask:   DW      &H0002
-TimerRunMask:    DW      &H0001
+TimerDoneMask:   DW      &H0002          ; DONE is bit 1 of the status
 
 CmdPause:        DW      0
 CmdStart:        DW      1
 CmdReset:        DW      2
 
-DefaultDuration: DW      60      ; 6.0 seconds (60 deciseconds)
+DefaultDuration: DW      60              ; 6.0 seconds
 
-; Load round duration into 0x070 (resets timer and clears DONE)
+; Load the round time. This also clears DONE and leaves the timer paused.
 Timer_LoadDuration:
         LOAD    DefaultDuration
         OUT     TimerValue
         RETURN
 
-; Start countdown
+; Start the countdown
 Timer_Start:
         LOAD    CmdStart
         OUT     TimerControl
         RETURN
 
-; Pause countdown (stops hardware tick counter)
+; Freeze the countdown. The time left stays put.
 Timer_Pause:
         LOAD    CmdPause
         OUT     TimerControl
         RETURN
 
-; Resume countdown
+; Unfreeze the countdown from where it stopped
 Timer_Resume:
         LOAD    CmdStart
         OUT     TimerControl
         RETURN
 
-; Reset to loaded duration
+; Put the timer back to the full time (it stays paused)
 Timer_Reset:
         LOAD    CmdReset
         OUT     TimerControl
         RETURN
 
-; Read live time into RemainingTicks and check if timer hit 0
+; Read the time left and check whether the timer is done
 Timer_PollStatus:
         IN      TimerValue
         STORE   RemainingTicks
@@ -238,46 +274,48 @@ Timer_PollStatus:
         IN      TimerControl
         AND     TimerDoneMask
         JZERO   TimerNotDone
-        LOAD    P1_One
+        LOAD    One
         STORE   TimerDoneFlag
         RETURN
 
 TimerNotDone:
-        LOAD    P1_Zero
+        LOAD    Zero
         STORE   TimerDoneFlag
         RETURN
-
-P1_Zero: DW      0
-P1_One:  DW      1
 
 ; ============================================================
 ; Person 2 - Multiplier Table & Crash Engine
 ;
-; Manages the 30-step payout table and random crash check.
-; SCOMP doesn't have multiply/divide instructions, so all 30
-; payout values are precomputed in RAM to avoid runtime math.
+; SCOMP can't multiply or divide, so all 30 payouts are already
+; worked out and stored in RAM below. Each step just looks one
+; up. This part also picks the secret random step where the
+; rocket crashes.
 ; ============================================================
-; Reset table index to 0 and load starting money
+
+; Go back to step 0 with the starting payout
 Table_Init:
-        LOAD    P2_Zero
+        LOAD    Zero
         STORE   CurrentValueIdx
         STORE   CrashFlag
         LOAD    Value_00
         STORE   CurrentMoney
         RETURN
 
-; Pick a cutoff from 8 through 30 once per launch. Since payouts stop
-; at index 29, a cutoff of 30 lets the hardware timer end the round.
+; Pick the crash step once per launch. It lands somewhere from 8
+; through 30. The payouts stop at step 29, so a pick of 30 means
+; the rocket survives and the timer ends the round instead.
+; This uses an LFSR (a scrambled shift register) as the random source.
 Table_GenCrashThreshold:
         LOAD    PRNG_Seed
         JZERO   P2_RestoreSeed
         JUMP    P2_AdvanceLfsr
 
 P2_RestoreSeed:
-        LOAD    P2_DefaultSeed ; zero is a locked state for the LFSR
+        LOAD    P2_DefaultSeed          ; an LFSR stuck at 0 never moves, so fix that
 
 P2_AdvanceLfsr:
-        ; Left-shift Galois LFSR. Apply feedback if the old MSB was set.
+        ; Shift left. If the bit that fell off the top was a 1,
+        ; flip some bits too (that's the feedback).
         JNEG    P2_ApplyFeedback
         SHIFT   1
         JUMP    P2_SampleLfsr
@@ -288,18 +326,18 @@ P2_ApplyFeedback:
 
 P2_SampleLfsr:
         STORE   PRNG_Seed
-        AND     P2_SampleMask
+        AND     P2_SampleMask           ; keep 5 bits = 0..31
         SUB     P2_SampleCount
         JNEG    P2_AcceptSample
-        JUMP    Table_GenCrashThreshold ; discard 23..31, then draw again
+        JUMP    Table_GenCrashThreshold ; got 23..31, throw it out and roll again
 
 P2_AcceptSample:
-        ADD     P2_SampleCount
-        ADD     P2_MinCrash
+        ADD     P2_SampleCount          ; undo the subtract, now it's 0..22
+        ADD     P2_MinCrash             ; shift up to 8..30
         STORE   CrashThreshold
         RETURN
 
-; Check if current step reached the crash threshold
+; Did we get to the crash step? Sets CrashFlag if yes.
 Table_CheckCrash:
         LOAD    CurrentValueIdx
         SUB     CrashThreshold
@@ -308,11 +346,12 @@ Table_CheckCrash:
         RETURN
 
 SetCrashed:
-        LOAD    P2_One
+        LOAD    One
         STORE   CrashFlag
         RETURN
 
-; Advance one step and hold the final payout at index 29.
+; Move up one step and grab the new payout. Stops at step 29
+; so a round can never run off the end of the table.
 Table_StepNext:
         LOAD    CurrentValueIdx
         SUB     P2_LastIndex
@@ -321,66 +360,66 @@ Table_StepNext:
 
 P2_AdvanceStep:
         LOAD    CurrentValueIdx
-        ADD     P2_One
+        ADD     One
         STORE   CurrentValueIdx
 
-        ; Lab 8 SCOMP has no indirect load. Count down the index to
-        ; select a direct load from the payout table.
-        SUB     P2_One
+        ; SCOMP can't load from "table + index", so we count the
+        ; index down to find which Value_xx to load directly.
+        SUB     One
         JZERO   P2_Pay01
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay02
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay03
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay04
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay05
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay06
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay07
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay08
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay09
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay10
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay11
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay12
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay13
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay14
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay15
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay16
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay17
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay18
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay19
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay20
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay21
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay22
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay23
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay24
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay25
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay26
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay27
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay28
 
 P2_Pay29: LOAD  Value_29
@@ -445,16 +484,14 @@ P2_StorePayout:
         STORE   CurrentMoney
         RETURN
 
-P2_DefaultSeed: DW      &HACE1
-P2_LfsrMask:    DW      &H002D
-P2_SampleMask:  DW      &H001F
-P2_SampleCount: DW      23
-P2_MinCrash:    DW      8
-P2_Zero:        DW      0
-P2_One:         DW      1
-P2_LastIndex:   DW      29
+P2_DefaultSeed: DW      &HACE1          ; backup seed if the LFSR ever hits 0
+P2_LfsrMask:    DW      &H002D          ; which bits get flipped by the feedback
+P2_SampleMask:  DW      &H001F          ; keeps the low 5 bits
+P2_SampleCount: DW      23              ; 23 usable values (0..22)
+P2_MinCrash:    DW      8               ; earliest possible crash step
+P2_LastIndex:   DW      29              ; last step in the table
 
-; Precomputed 30-step payout table (wager = 10, climbs to 500)
+; The 30 payouts (stake of 10 climbing up to 500)
 Value_00: DW  10
 Value_01: DW  11
 Value_02: DW  12
@@ -487,13 +524,17 @@ Value_28: DW  400
 Value_29: DW  500
 
 ; ============================================================
-; Person 3 - Switch Controls & Debounce
+; Person 3 - Switch Controls
 ;
-; Reads switch inputs from address 0x000:
-;   SW0: Launch / Start
-;   SW1: Cash Out
-;   SW2: Pause / Resume (writes 0 / 1 to the timer control port)
-;   SW3: Replay / New Round
+; Reads the switches at 0x000:
+;   SW0  Launch
+;   SW1  Cash out
+;   SW2  Pause (up = paused, down = running)
+;   SW3  Play again
+;
+; Launch, cash out and play again fire ONCE when you flip the
+; switch up, so holding one up doesn't repeat it. Each switch is
+; tracked on its own, so leaving SW0 up won't block SW1.
 ; ============================================================
 
 Switches:        EQU     &H000
@@ -503,38 +544,22 @@ SW1_CashOutMask: DW      &H0002
 SW2_PauseMask:   DW      &H0004
 SW3_ResetMask:   DW      &H0008
 
-PrevSwitches:    DW      0
-CurrSwitches:    DW      0
-NewPresses:      DW      0
+PrevSwitches:    DW      0              ; switches last time we looked
+CurrSwitches:    DW      0              ; switches right now
+NewPresses:      DW      0              ; switches that just went up this time
 
-; Poll switches and detect rising edges so held switches don't repeat
+; Read the switches and work out which ones were JUST flipped up
 Inputs_Poll:
         IN      Switches
         STORE   CurrSwitches
-
+        XOR     PrevSwitches            ; 1 = this switch changed
+        AND     CurrSwitches            ; ...and it's up now, so it was just pressed
+        STORE   NewPresses
         LOAD    CurrSwitches
-        JZERO   ClearEdge
-
-        LOAD    PrevSwitches
-        JPOS    NoEdge
-
-        LOAD    CurrSwitches
-        STORE   PrevSwitches
-        STORE   NewPresses
+        STORE   PrevSwitches            ; remember for next time
         RETURN
 
-ClearEdge:
-        LOAD    P3_Zero
-        STORE   PrevSwitches
-        STORE   NewPresses
-        RETURN
-
-NoEdge:
-        LOAD    P3_Zero
-        STORE   NewPresses
-        RETURN
-
-; Returns AC = 1 if Cash Out was pressed and game is not paused
+; Returns AC = 1 if cash out was pressed. Blocked while paused.
 Inputs_CheckCashOut:
         LOAD    GamePaused
         JPOS    BlockCashOut
@@ -542,186 +567,189 @@ Inputs_CheckCashOut:
         LOAD    NewPresses
         AND     SW1_CashOutMask
         JPOS    HitCashOut
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 HitCashOut:
-        LOAD    P3_One
+        LOAD    One
         RETURN
 
 BlockCashOut:
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
-; Handles SW2 pause/resume toggle.
-; The timer port is written here directly: Timer_Pause/Timer_Resume
-; cannot be CALLed from inside this routine because SCOMP has only
-; one return register and no call stack.
-Inputs_CheckPauseToggle:
-        LOAD    NewPresses
+; Follow SW2. Up = paused, down = running. The timer is only told
+; when SW2 actually changes, so we don't spam it every loop.
+Inputs_CheckPause:
+        LOAD    CurrSwitches
         AND     SW2_PauseMask
-        JZERO   NoPauseChange
+        JZERO   WantRunning
 
+        ; SW2 is up, so we want to be paused
         LOAD    GamePaused
-        JZERO   PauseNow
-
-        ; Unpause:
-        LOAD    P3_Zero
+        JPOS    PauseDone               ; already paused, nothing to do
+        LOAD    One
         STORE   GamePaused
-        LOAD    CmdStart
-        OUT     TimerControl
+        CALL    Timer_Pause
         RETURN
 
-PauseNow:
-        LOAD    P3_One
+WantRunning:
+        ; SW2 is down, so we want to be running
+        LOAD    GamePaused
+        JZERO   PauseDone               ; already running, nothing to do
+        LOAD    Zero
         STORE   GamePaused
-        LOAD    CmdPause
-        OUT     TimerControl
+        CALL    Timer_Resume
+
+PauseDone:
         RETURN
 
-NoPauseChange:
-        RETURN
-
-; Check SW0 (Launch)
+; Returns AC = 1 if SW0 (launch) was just pressed
 Inputs_CheckStart:
         LOAD    NewPresses
         AND     SW0_StartMask
         JPOS    StartFired
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 StartFired:
-        LOAD    P3_One
+        LOAD    One
         RETURN
 
-; Check SW3 (New round / reset)
+; Returns AC = 1 if SW3 (play again) was just pressed
 Inputs_CheckReset:
         LOAD    NewPresses
         AND     SW3_ResetMask
         JPOS    ResetFired
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 ResetFired:
-        LOAD    P3_One
+        LOAD    One
         RETURN
-
-P3_Zero: DW 0
-P3_One:  DW 1
 
 ; ============================================================
 ; Person 4 - LEDs & HEX Displays
 ;
-;   0x001 (LEDs):    10 LEDs act as a thermometer for current money
-;                    (1 LED every 3 steps, up to 10 LEDs at step 27-29)
-;   0x004 (Hex0_1):  Remaining deciseconds from timer API
-;   0x005 (Hex2_3):  Current money / bank balance
+;   0x001 (LEDs):      10 LEDs act as a thermometer for the payout
+;                      (1 more LED every 3 steps, all 10 at step 27+)
+;   0x004 (HexMoney):  HEX3..HEX0, payout in a round / bank otherwise
+;   0x005 (HexTime):   HEX5..HEX4, time left in tenths of a second
+;
+; The HEX displays just show raw hex digits. So before we send a
+; number out we turn it into BCD (each hex digit holds one decimal
+; digit). That way 500 shows up as "0500" and not "01F4".
+;
+; Every delay here uses the board's 10 Hz timer at 0x002.
 ; ============================================================
-LEDs:           EQU     &H001
-Hex0_1:         EQU     &H004
-Hex2_3:         EQU     &H005
 
-; Update 10-LED thermometer based on CurrentValueIdx (0..29)
+LEDs:           EQU     &H001
+Timer:          EQU     &H002           ; board timer, counts every 0.1 sec
+HexMoney:       EQU     &H004
+HexTime:        EQU     &H005
+
+; Light up the thermometer. Start with 1 LED, then add another
+; for every 3 steps we've climbed.
 Display_UpdateLEDMoney:
         LOAD    CurrentValueIdx
-        SUB     Step27
-        JPOS    L10
-        JZERO   L10
+        STORE   LedWork
+        LOAD    One
+        STORE   LedBar                  ; first LED is always on
 
-        LOAD    CurrentValueIdx
-        SUB     Step24
-        JPOS    L9
-        JZERO   L9
+LedLoop:
+        LOAD    LedWork
+        SUB     Three
+        JNEG    LedDone                 ; less than 3 steps left, we're done
+        STORE   LedWork
+        LOAD    LedBar
+        SHIFT   1
+        ADD     One                     ; slide left and add one more LED
+        STORE   LedBar
+        JUMP    LedLoop
 
-        LOAD    CurrentValueIdx
-        SUB     Step21
-        JPOS    L8
-        JZERO   L8
-
-        LOAD    CurrentValueIdx
-        SUB     Step18
-        JPOS    L7
-        JZERO   L7
-
-        LOAD    CurrentValueIdx
-        SUB     Step15
-        JPOS    L6
-        JZERO   L6
-
-        LOAD    CurrentValueIdx
-        SUB     Step12
-        JPOS    L5
-        JZERO   L5
-
-        LOAD    CurrentValueIdx
-        SUB     Step9
-        JPOS    L4
-        JZERO   L4
-
-        LOAD    CurrentValueIdx
-        SUB     Step6
-        JPOS    L3
-        JZERO   L3
-
-        LOAD    CurrentValueIdx
-        SUB     Step3
-        JPOS    L2
-        JZERO   L2
-
-        LOAD    Bar1
+LedDone:
+        LOAD    LedBar
         OUT     LEDs
         RETURN
 
-L10:    LOAD    Bar10
-        OUT     LEDs
-        RETURN
-L9:     LOAD    Bar9
-        OUT     LEDs
-        RETURN
-L8:     LOAD    Bar8
-        OUT     LEDs
-        RETURN
-L7:     LOAD    Bar7
-        OUT     LEDs
-        RETURN
-L6:     LOAD    Bar6
-        OUT     LEDs
-        RETURN
-L5:     LOAD    Bar5
-        OUT     LEDs
-        RETURN
-L4:     LOAD    Bar4
-        OUT     LEDs
-        RETURN
-L3:     LOAD    Bar3
-        OUT     LEDs
-        RETURN
-L2:     LOAD    Bar2
-        OUT     LEDs
-        RETURN
-
-; Output time and money to HEX digits
+; Show the payout and the time left during a round
 Display_UpdateHEX:
-        LOAD    RemainingTicks
-        OUT     Hex0_1
         LOAD    CurrentMoney
-        OUT     Hex2_3
+        CALL    Display_ToBCD
+        OUT     HexMoney
+        LOAD    RemainingTicks
+        CALL    Display_ToBCD
+        OUT     HexTime
         RETURN
 
-; Cash out flash (all LEDs lit)
+; Show the bank on the big display and blank the time display
+Display_ShowBank:
+        LOAD    BankedCredits
+        JPOS    ShowBankNumber
+        LOAD    Zero                    ; never show a negative number
+ShowBankNumber:
+        CALL    Display_ToBCD
+        OUT     HexMoney
+        LOAD    Zero
+        OUT     HexTime
+        RETURN
+
+; Turn a number (0..9999) in AC into BCD and hand it back in AC.
+; We just subtract 1000s, then 100s, then 10s, and count how many.
+Display_ToBCD:
+        STORE   BcdWork
+        LOAD    Zero
+        STORE   BcdOut
+
+BcdThousands:
+        LOAD    BcdWork
+        SUB     Num1000
+        JNEG    BcdHundreds
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd1000
+        STORE   BcdOut
+        JUMP    BcdThousands
+
+BcdHundreds:
+        LOAD    BcdWork
+        SUB     Num100
+        JNEG    BcdTens
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd100
+        STORE   BcdOut
+        JUMP    BcdHundreds
+
+BcdTens:
+        LOAD    BcdWork
+        SUB     Num10
+        JNEG    BcdOnes
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd10
+        STORE   BcdOut
+        JUMP    BcdTens
+
+BcdOnes:
+        LOAD    BcdOut
+        ADD     BcdWork                 ; whatever is left is the ones digit
+        RETURN
+
+; Cash out flash: all LEDs blink on, off, on
 Display_AnimCashOut:
         LOAD    Bar10
         OUT     LEDs
         CALL    Delay
-        LOAD    P4_Zero
+        LOAD    Zero
         OUT     LEDs
         CALL    Delay
         LOAD    Bar10
         OUT     LEDs
         CALL    Delay
-        JUMP    StateReplay            ; tail back to the main loop
+        RETURN
 
-; Crash strobe (alternating pattern)
+; Crash flash: the LEDs alternate in a hazard pattern
 Display_AnimCrash:
         LOAD    Hazard1
         OUT     LEDs
@@ -735,62 +763,45 @@ Display_AnimCrash:
         LOAD    Hazard2
         OUT     LEDs
         CALL    Delay
-        JUMP    BustAfterCrash         ; tail back to the main loop
+        RETURN
 
-; Bankrupt (all LEDs off, clear HEX)
+; Bankrupt: same hazard flash but it never stops
 Display_AnimBankrupt:
-        LOAD    P4_Zero
+BankruptLoop:
+        LOAD    Hazard1
         OUT     LEDs
-        OUT     Hex0_1
-        OUT     Hex2_3
-        RETURN
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
+        JUMP    BankruptLoop
 
+; Wait about 0.3 seconds. Writing to the board timer resets it
+; to 0, then we wait until it has counted up to DelayTicks.
 Delay:
-        LOAD    OuterLoops
-        STORE   OuterCount
-OuterLoop:
-        LOAD    InnerLoops
-        STORE   InnerCount
-InnerLoop:
-        LOAD    InnerCount
-        SUB     One
-        STORE   InnerCount
-        JPOS    InnerLoop
-
-        LOAD    OuterCount
-        SUB     One
-        STORE   OuterCount
-        JPOS    OuterLoop
+        OUT     Timer
+DelayWait:
+        IN      Timer
+        SUB     DelayTicks
+        JNEG    DelayWait
         RETURN
 
-; Inner * Outer = 1 million        
-OuterLoops: DW 100
-InnerLoops: DW 10000
-OuterCount: DW 0
-InnerCount: DW 1
-One:        DW  1
+DelayTicks: DW  3                       ; 3 ticks of 0.1 sec = 0.3 sec
 
-Bar1:       DW  &H0001
-Bar2:       DW  &H0003
-Bar3:       DW  &H0007
-Bar4:       DW  &H000F
-Bar5:       DW  &H001F
-Bar6:       DW  &H003F
-Bar7:       DW  &H007F
-Bar8:       DW  &H00FF
-Bar9:       DW  &H01FF
-Bar10:      DW  &H03FF
+; Scratch space for the LED bar and the BCD converter
+LedWork:    DW  0
+LedBar:     DW  0
+BcdWork:    DW  0
+BcdOut:     DW  0
 
-Hazard1:    DW  &H02AA
-Hazard2:    DW  &H0155
+Three:      DW  3
+Num1000:    DW  1000
+Num100:     DW  100
+Num10:      DW  10
+Bcd1000:    DW  &H1000
+Bcd100:     DW  &H0100
+Bcd10:      DW  &H0010
 
-Step3:      DW  3
-Step6:      DW  6
-Step9:      DW  9
-Step12:     DW  12
-Step15:     DW  15
-Step18:     DW  18
-Step21:     DW  21
-Step24:     DW  24
-Step27:     DW  27
-P4_Zero:    DW  0
+Bar10:      DW  &H03FF                  ; all 10 LEDs on
+Hazard1:    DW  &H02AA                  ; every other LED
+Hazard2:    DW  &H0155                  ; the other every other LED

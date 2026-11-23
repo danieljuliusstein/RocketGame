@@ -1,33 +1,40 @@
 ; ============================================================
 ; Person 2 - Multiplier Table & Crash Engine
 ;
-; Manages the 30-step payout table and random crash check.
-; SCOMP doesn't have multiply/divide instructions, so we precompute
-; all 30 payout values in RAM to avoid runtime math.
-;
+; SCOMP can't multiply or divide, so all 30 payouts are already
+; worked out and stored in RAM below. Each step just looks one
+; up. This part also picks the secret random step where the
+; rocket crashes.
 ; ============================================================
 
-; Reset table index to 0 and load starting money
+; (This is Person 2's slice of RocketGame.asm. It leans on the shared
+; variables, Zero and One from the Person 5 section, so assemble the
+; full RocketGame.asm to run it.)
+
+; Go back to step 0 with the starting payout
 Table_Init:
-        LOAD    P2_Zero
+        LOAD    Zero
         STORE   CurrentValueIdx
         STORE   CrashFlag
         LOAD    Value_00
         STORE   CurrentMoney
         RETURN
 
-; Pick a cutoff from 8 through 30 once per launch. Since payouts stop
-; at index 29, a cutoff of 30 lets the hardware timer end the round.
+; Pick the crash step once per launch. It lands somewhere from 8
+; through 30. The payouts stop at step 29, so a pick of 30 means
+; the rocket survives and the timer ends the round instead.
+; This uses an LFSR (a scrambled shift register) as the random source.
 Table_GenCrashThreshold:
         LOAD    PRNG_Seed
         JZERO   P2_RestoreSeed
         JUMP    P2_AdvanceLfsr
 
 P2_RestoreSeed:
-        LOAD    P2_DefaultSeed ; zero is a locked state for the LFSR
+        LOAD    P2_DefaultSeed          ; an LFSR stuck at 0 never moves, so fix that
 
 P2_AdvanceLfsr:
-        ; Left-shift Galois LFSR. Apply feedback if the old MSB was set.
+        ; Shift left. If the bit that fell off the top was a 1,
+        ; flip some bits too (that's the feedback).
         JNEG    P2_ApplyFeedback
         SHIFT   1
         JUMP    P2_SampleLfsr
@@ -38,18 +45,18 @@ P2_ApplyFeedback:
 
 P2_SampleLfsr:
         STORE   PRNG_Seed
-        AND     P2_SampleMask
+        AND     P2_SampleMask           ; keep 5 bits = 0..31
         SUB     P2_SampleCount
         JNEG    P2_AcceptSample
-        JUMP    Table_GenCrashThreshold ; discard 23..31, then draw again
+        JUMP    Table_GenCrashThreshold ; got 23..31, throw it out and roll again
 
 P2_AcceptSample:
-        ADD     P2_SampleCount
-        ADD     P2_MinCrash
+        ADD     P2_SampleCount          ; undo the subtract, now it's 0..22
+        ADD     P2_MinCrash             ; shift up to 8..30
         STORE   CrashThreshold
         RETURN
 
-; Check if current step reached the crash threshold
+; Did we get to the crash step? Sets CrashFlag if yes.
 Table_CheckCrash:
         LOAD    CurrentValueIdx
         SUB     CrashThreshold
@@ -58,11 +65,12 @@ Table_CheckCrash:
         RETURN
 
 SetCrashed:
-        LOAD    P2_One
+        LOAD    One
         STORE   CrashFlag
         RETURN
 
-; Advance one step and hold the final payout at index 29.
+; Move up one step and grab the new payout. Stops at step 29
+; so a round can never run off the end of the table.
 Table_StepNext:
         LOAD    CurrentValueIdx
         SUB     P2_LastIndex
@@ -71,66 +79,66 @@ Table_StepNext:
 
 P2_AdvanceStep:
         LOAD    CurrentValueIdx
-        ADD     P2_One
+        ADD     One
         STORE   CurrentValueIdx
 
-        ; Lab 8 SCOMP has no indirect load. Count down the index to
-        ; select a direct load from the payout table.
-        SUB     P2_One
+        ; SCOMP can't load from "table + index", so we count the
+        ; index down to find which Value_xx to load directly.
+        SUB     One
         JZERO   P2_Pay01
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay02
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay03
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay04
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay05
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay06
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay07
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay08
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay09
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay10
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay11
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay12
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay13
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay14
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay15
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay16
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay17
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay18
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay19
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay20
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay21
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay22
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay23
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay24
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay25
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay26
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay27
-        SUB     P2_One
+        SUB     One
         JZERO   P2_Pay28
 
 P2_Pay29: LOAD  Value_29
@@ -195,16 +203,14 @@ P2_StorePayout:
         STORE   CurrentMoney
         RETURN
 
-P2_DefaultSeed: DW      &HACE1
-P2_LfsrMask:    DW      &H002D
-P2_SampleMask:  DW      &H001F
-P2_SampleCount: DW      23
-P2_MinCrash:    DW      8
-P2_Zero:        DW      0
-P2_One:         DW      1
-P2_LastIndex:   DW      29
+P2_DefaultSeed: DW      &HACE1          ; backup seed if the LFSR ever hits 0
+P2_LfsrMask:    DW      &H002D          ; which bits get flipped by the feedback
+P2_SampleMask:  DW      &H001F          ; keeps the low 5 bits
+P2_SampleCount: DW      23              ; 23 usable values (0..22)
+P2_MinCrash:    DW      8               ; earliest possible crash step
+P2_LastIndex:   DW      29              ; last step in the table
 
-; Precomputed 30-step payout table (wager = 10, climbs to 500)
+; The 30 payouts (stake of 10 climbing up to 500)
 Value_00: DW  10
 Value_01: DW  11
 Value_02: DW  12

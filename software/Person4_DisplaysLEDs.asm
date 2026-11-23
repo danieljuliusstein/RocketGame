@@ -1,114 +1,121 @@
 ; ============================================================
 ; Person 4 - LEDs & HEX Displays
 ;
-; Manages board visual feedback:
-;   0x001 (LEDs):    10 LEDs act as a thermometer for current money
-;                    (1 LED every 3 steps, up to 10 LEDs at step 27-29)
-;   0x004 (Hex0_1):  Remaining deciseconds from timer API
-;   0x005 (Hex2_3):  Current money / bank balance
+;   0x001 (LEDs):      10 LEDs act as a thermometer for the payout
+;                      (1 more LED every 3 steps, all 10 at step 27+)
+;   0x004 (HexMoney):  HEX3..HEX0, payout in a round / bank otherwise
+;   0x005 (HexTime):   HEX5..HEX4, time left in tenths of a second
 ;
-; TODO for Person 4:
-; - Add short delay loops to win and crash animations so flashes are visible
-; - Confirm HEX format matches Lab 8 HEX decoder
+; The HEX displays just show raw hex digits. So before we send a
+; number out we turn it into BCD (each hex digit holds one decimal
+; digit). That way 500 shows up as "0500" and not "01F4".
+;
+; Every delay here uses the board's 10 Hz timer at 0x002.
 ; ============================================================
 
-LEDs:           EQU     &H001
-Hex0_1:         EQU     &H004
-Hex2_3:         EQU     &H005
+; (This is Person 4's slice of RocketGame.asm. It leans on the shared
+; variables, Zero and One from the Person 5 section, so assemble the
+; full RocketGame.asm to run it.)
 
-; Update 10-LED thermometer based on CurrentValueIdx (0..29)
+LEDs:           EQU     &H001
+Timer:          EQU     &H002           ; board timer, counts every 0.1 sec
+HexMoney:       EQU     &H004
+HexTime:        EQU     &H005
+
+; Light up the thermometer. Start with 1 LED, then add another
+; for every 3 steps we've climbed.
 Display_UpdateLEDMoney:
         LOAD    CurrentValueIdx
-        SUB     Step27
-        JPOS    L10
-        JZERO   L10
+        STORE   LedWork
+        LOAD    One
+        STORE   LedBar                  ; first LED is always on
 
-        LOAD    CurrentValueIdx
-        SUB     Step24
-        JPOS    L9
-        JZERO   L9
+LedLoop:
+        LOAD    LedWork
+        SUB     Three
+        JNEG    LedDone                 ; less than 3 steps left, we're done
+        STORE   LedWork
+        LOAD    LedBar
+        SHIFT   1
+        ADD     One                     ; slide left and add one more LED
+        STORE   LedBar
+        JUMP    LedLoop
 
-        LOAD    CurrentValueIdx
-        SUB     Step21
-        JPOS    L8
-        JZERO   L8
-
-        LOAD    CurrentValueIdx
-        SUB     Step18
-        JPOS    L7
-        JZERO   L7
-
-        LOAD    CurrentValueIdx
-        SUB     Step15
-        JPOS    L6
-        JZERO   L6
-
-        LOAD    CurrentValueIdx
-        SUB     Step12
-        JPOS    L5
-        JZERO   L5
-
-        LOAD    CurrentValueIdx
-        SUB     Step9
-        JPOS    L4
-        JZERO   L4
-
-        LOAD    CurrentValueIdx
-        SUB     Step6
-        JPOS    L3
-        JZERO   L3
-
-        LOAD    CurrentValueIdx
-        SUB     Step3
-        JPOS    L2
-        JZERO   L2
-
-        LOAD    Bar1
+LedDone:
+        LOAD    LedBar
         OUT     LEDs
         RETURN
 
-L10:    LOAD    Bar10
-        OUT     LEDs
-        RETURN
-L9:     LOAD    Bar9
-        OUT     LEDs
-        RETURN
-L8:     LOAD    Bar8
-        OUT     LEDs
-        RETURN
-L7:     LOAD    Bar7
-        OUT     LEDs
-        RETURN
-L6:     LOAD    Bar6
-        OUT     LEDs
-        RETURN
-L5:     LOAD    Bar5
-        OUT     LEDs
-        RETURN
-L4:     LOAD    Bar4
-        OUT     LEDs
-        RETURN
-L3:     LOAD    Bar3
-        OUT     LEDs
-        RETURN
-L2:     LOAD    Bar2
-        OUT     LEDs
-        RETURN
-
-; Output time and money to HEX digits
+; Show the payout and the time left during a round
 Display_UpdateHEX:
-        LOAD    RemainingTicks
-        OUT     Hex0_1
         LOAD    CurrentMoney
-        OUT     Hex2_3
+        CALL    Display_ToBCD
+        OUT     HexMoney
+        LOAD    RemainingTicks
+        CALL    Display_ToBCD
+        OUT     HexTime
         RETURN
 
-; Cash out flash (all LEDs lit)
+; Show the bank on the big display and blank the time display
+Display_ShowBank:
+        LOAD    BankedCredits
+        JPOS    ShowBankNumber
+        LOAD    Zero                    ; never show a negative number
+ShowBankNumber:
+        CALL    Display_ToBCD
+        OUT     HexMoney
+        LOAD    Zero
+        OUT     HexTime
+        RETURN
+
+; Turn a number (0..9999) in AC into BCD and hand it back in AC.
+; We just subtract 1000s, then 100s, then 10s, and count how many.
+Display_ToBCD:
+        STORE   BcdWork
+        LOAD    Zero
+        STORE   BcdOut
+
+BcdThousands:
+        LOAD    BcdWork
+        SUB     Num1000
+        JNEG    BcdHundreds
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd1000
+        STORE   BcdOut
+        JUMP    BcdThousands
+
+BcdHundreds:
+        LOAD    BcdWork
+        SUB     Num100
+        JNEG    BcdTens
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd100
+        STORE   BcdOut
+        JUMP    BcdHundreds
+
+BcdTens:
+        LOAD    BcdWork
+        SUB     Num10
+        JNEG    BcdOnes
+        STORE   BcdWork
+        LOAD    BcdOut
+        ADD     Bcd10
+        STORE   BcdOut
+        JUMP    BcdTens
+
+BcdOnes:
+        LOAD    BcdOut
+        ADD     BcdWork                 ; whatever is left is the ones digit
+        RETURN
+
+; Cash out flash: all LEDs blink on, off, on
 Display_AnimCashOut:
         LOAD    Bar10
         OUT     LEDs
         CALL    Delay
-        LOAD    P4_Zero
+        LOAD    Zero
         OUT     LEDs
         CALL    Delay
         LOAD    Bar10
@@ -116,7 +123,7 @@ Display_AnimCashOut:
         CALL    Delay
         RETURN
 
-; Crash strobe (alternating pattern)
+; Crash flash: the LEDs alternate in a hazard pattern
 Display_AnimCrash:
         LOAD    Hazard1
         OUT     LEDs
@@ -132,60 +139,43 @@ Display_AnimCrash:
         CALL    Delay
         RETURN
 
-; Bankrupt (all LEDs off, clear HEX)
+; Bankrupt: same hazard flash but it never stops
 Display_AnimBankrupt:
-        LOAD    P4_Zero
+BankruptLoop:
+        LOAD    Hazard1
         OUT     LEDs
-        OUT     Hex0_1
-        OUT     Hex2_3
-        RETURN
+        CALL    Delay
+        LOAD    Hazard2
+        OUT     LEDs
+        CALL    Delay
+        JUMP    BankruptLoop
 
+; Wait about 0.3 seconds. Writing to the board timer resets it
+; to 0, then we wait until it has counted up to DelayTicks.
 Delay:
-        LOAD    OuterLoops
-        STORE   OuterCount
-OuterLoop:
-        LOAD    InnerLoops
-        STORE   InnerCount
-InnerLoop:
-        LOAD    InnerCount
-        SUB     One
-        STORE   InnerCount
-        JPOS    InnerLoop
-
-        LOAD    OuterCount
-        SUB     One
-        STORE   OuterCount
-        JPOS    OuterLoop
+        OUT     Timer
+DelayWait:
+        IN      Timer
+        SUB     DelayTicks
+        JNEG    DelayWait
         RETURN
 
-; Inner * Outer = 1 million        
-OuterLoops: DW 100
-InnerLoops: DW 10000
-OuterCount: DW 0
-InnerCount: DW 1
-One:        DW  1
+DelayTicks: DW  3                       ; 3 ticks of 0.1 sec = 0.3 sec
 
-Bar1:       DW  &H0001
-Bar2:       DW  &H0003
-Bar3:       DW  &H0007
-Bar4:       DW  &H000F
-Bar5:       DW  &H001F
-Bar6:       DW  &H003F
-Bar7:       DW  &H007F
-Bar8:       DW  &H00FF
-Bar9:       DW  &H01FF
-Bar10:      DW  &H03FF
+; Scratch space for the LED bar and the BCD converter
+LedWork:    DW  0
+LedBar:     DW  0
+BcdWork:    DW  0
+BcdOut:     DW  0
 
-Hazard1:    DW  &H02AA
-Hazard2:    DW  &H0155
+Three:      DW  3
+Num1000:    DW  1000
+Num100:     DW  100
+Num10:      DW  10
+Bcd1000:    DW  &H1000
+Bcd100:     DW  &H0100
+Bcd10:      DW  &H0010
 
-Step3:      DW  3
-Step6:      DW  6
-Step9:      DW  9
-Step12:     DW  12
-Step15:     DW  15
-Step18:     DW  18
-Step21:     DW  21
-Step24:     DW  24
-Step27:     DW  27
-P4_Zero:    DW  0
+Bar10:      DW  &H03FF                  ; all 10 LEDs on
+Hazard1:    DW  &H02AA                  ; every other LED
+Hazard2:    DW  &H0155                  ; the other every other LED

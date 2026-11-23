@@ -1,16 +1,20 @@
 ; ============================================================
-; Person 3 - Switch Controls & Debounce
+; Person 3 - Switch Controls
 ;
-; Reads switch inputs from address 0x000:
-;   SW0: Launch / Start
-;   SW1: Cash Out
-;   SW2: Pause / Resume (calls Timer_Pause or Timer_Resume)
-;   SW3: Replay / New Round
+; Reads the switches at 0x000:
+;   SW0  Launch
+;   SW1  Cash out
+;   SW2  Pause (up = paused, down = running)
+;   SW3  Play again
 ;
-; TODO for Person 3:
-; - Test switch debouncing on the DE10-Lite
-; - Make sure Cash Out is locked when GamePaused = 1
+; Launch, cash out and play again fire ONCE when you flip the
+; switch up, so holding one up doesn't repeat it. Each switch is
+; tracked on its own, so leaving SW0 up won't block SW1.
 ; ============================================================
+
+; (This is Person 3's slice of RocketGame.asm. It leans on the shared
+; variables, Zero and One from the Person 5 section, so assemble the
+; full RocketGame.asm to run it.)
 
 Switches:        EQU     &H000
 
@@ -19,38 +23,22 @@ SW1_CashOutMask: DW      &H0002
 SW2_PauseMask:   DW      &H0004
 SW3_ResetMask:   DW      &H0008
 
-PrevSwitches:    DW      0
-CurrSwitches:    DW      0
-NewPresses:      DW      0
+PrevSwitches:    DW      0              ; switches last time we looked
+CurrSwitches:    DW      0              ; switches right now
+NewPresses:      DW      0              ; switches that just went up this time
 
-; Poll switches and detect rising edges so held switches don't repeat
+; Read the switches and work out which ones were JUST flipped up
 Inputs_Poll:
         IN      Switches
         STORE   CurrSwitches
-
+        XOR     PrevSwitches            ; 1 = this switch changed
+        AND     CurrSwitches            ; ...and it's up now, so it was just pressed
+        STORE   NewPresses
         LOAD    CurrSwitches
-        JZERO   ClearEdge
-
-        LOAD    PrevSwitches
-        JPOS    NoEdge
-
-        LOAD    CurrSwitches
-        STORE   PrevSwitches
-        STORE   NewPresses
+        STORE   PrevSwitches            ; remember for next time
         RETURN
 
-ClearEdge:
-        LOAD    P3_Zero
-        STORE   PrevSwitches
-        STORE   NewPresses
-        RETURN
-
-NoEdge:
-        LOAD    P3_Zero
-        STORE   NewPresses
-        RETURN
-
-; Returns AC = 1 if Cash Out was pressed and game is not paused
+; Returns AC = 1 if cash out was pressed. Blocked while paused.
 Inputs_CheckCashOut:
         LOAD    GamePaused
         JPOS    BlockCashOut
@@ -58,64 +46,63 @@ Inputs_CheckCashOut:
         LOAD    NewPresses
         AND     SW1_CashOutMask
         JPOS    HitCashOut
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 HitCashOut:
-        LOAD    P3_One
+        LOAD    One
         RETURN
 
 BlockCashOut:
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
-; Handles SW2 pause/resume toggle
-Inputs_CheckPauseToggle:
-        LOAD    NewPresses
+; Follow SW2. Up = paused, down = running. The timer is only told
+; when SW2 actually changes, so we don't spam it every loop.
+Inputs_CheckPause:
+        LOAD    CurrSwitches
         AND     SW2_PauseMask
-        JZERO   NoPauseChange
+        JZERO   WantRunning
 
+        ; SW2 is up, so we want to be paused
         LOAD    GamePaused
-        JZERO   PauseNow
-
-        ; Unpause:
-        LOAD    P3_Zero
-        STORE   GamePaused
-        CALL    Timer_Resume
-        RETURN
-
-PauseNow:
-        LOAD    P3_One
+        JPOS    PauseDone               ; already paused, nothing to do
+        LOAD    One
         STORE   GamePaused
         CALL    Timer_Pause
         RETURN
 
-NoPauseChange:
+WantRunning:
+        ; SW2 is down, so we want to be running
+        LOAD    GamePaused
+        JZERO   PauseDone               ; already running, nothing to do
+        LOAD    Zero
+        STORE   GamePaused
+        CALL    Timer_Resume
+
+PauseDone:
         RETURN
 
-; Check SW0 (Launch)
+; Returns AC = 1 if SW0 (launch) was just pressed
 Inputs_CheckStart:
         LOAD    NewPresses
         AND     SW0_StartMask
         JPOS    StartFired
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 StartFired:
-        LOAD    P3_One
+        LOAD    One
         RETURN
 
-; Check SW3 (New round / reset)
+; Returns AC = 1 if SW3 (play again) was just pressed
 Inputs_CheckReset:
         LOAD    NewPresses
         AND     SW3_ResetMask
         JPOS    ResetFired
-        LOAD    P3_Zero
+        LOAD    Zero
         RETURN
 
 ResetFired:
-        LOAD    P3_One
+        LOAD    One
         RETURN
-
-P3_Zero: DW 0
-P3_One:  DW 1

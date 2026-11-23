@@ -1,73 +1,65 @@
 ; ============================================================
 ; Person 1 - Timer API Interface
 ;
-; Connects SCOMP to our pausable countdown peripheral:
-;   0x070 (TimerValue):   write loads duration (in 0.1s ticks)
-;                         read gets remaining deciseconds
-;   0x071 (TimerControl): write 0 = pause, 1 = start, 2 = reset
-;                         read bit 0 = running, bit 1 = done
+; This talks to our pausable countdown timer in the hardware:
+;   0x070 (TimerValue):   write = load a new time (tenths of a sec)
+;                         read  = time remaining
+;   0x071 (TimerControl): write 0 = pause, 1 = start/resume, 2 = reset
+;                         read  = status. bit 0 = running, bit 1 = done
 ;
-; TODO for Person 1:
-; - Verify register reads/writes on the actual DE10-Lite board
-; - Make sure Timer_PollStatus extracts DONE (bit 1) correctly
-; - Confirm that pausing mid-countdown holds time without losing ticks
-; 
-; Integration
-; - RocketGame.asm defines RemainingTicks and TimerDoneFlag
-; - Timer_LoadDuration takes no input and loads 60 ticks
-; - All Timer routines may overwrite AC
-; - Timer_PollStatus updates both shared variables and returns the 
-;   normalized DONE flag (0 or 1) in AC
-;
-; Verification
-; - Quartus load/pause/readback test passed with 60 ticks
-; - Simulation showed count holding at 3 during pause, continuing after
-;   resume, DONE was set at 0, and returning to 4 after reset cleared DONE
+; Quick facts:
+;   - Every routine here is allowed to change AC.
+;   - Timer_PollStatus fills in RemainingTicks and TimerDoneFlag
+;     (DONE is 0 or 1) so the rest of the code never touches the
+;     hardware directly.
 ; ============================================================
+
+; (This is Person 1's slice of RocketGame.asm. It leans on the shared
+; variables, Zero and One from the Person 5 section, so assemble the
+; full RocketGame.asm to run it.)
 
 TimerValue:      EQU     &H070
 TimerControl:    EQU     &H071
 
-TimerDoneMask:   DW      &H0002
-TimerRunMask:    DW      &H0001
+TimerDoneMask:   DW      &H0002          ; DONE is bit 1 of the status
 
 CmdPause:        DW      0
 CmdStart:        DW      1
 CmdReset:        DW      2
 
-DefaultDuration: DW      60      ; 6.0 seconds (60 deciseconds)
+DefaultDuration: DW      60              ; 6.0 seconds
 
-; Load round duration into 0x070 (resets timer and clears DONE)
+; Load the round time. This also clears DONE and leaves the timer paused.
 Timer_LoadDuration:
         LOAD    DefaultDuration
         OUT     TimerValue
         RETURN
 
-; Start countdown
+; Start the countdown
 Timer_Start:
         LOAD    CmdStart
         OUT     TimerControl
         RETURN
 
-; Pause countdown (stops hardware tick counter)
+; Freeze the countdown. The time left stays put.
 Timer_Pause:
         LOAD    CmdPause
         OUT     TimerControl
         RETURN
 
-; Resume countdown
+; Unfreeze the countdown from where it stopped
 Timer_Resume:
         LOAD    CmdStart
         OUT     TimerControl
         RETURN
 
-; Reset to loaded duration
+; Put the timer back to the full time (it stays paused)
 Timer_Reset:
         LOAD    CmdReset
         OUT     TimerControl
         RETURN
 
-; Read live time into RemainingTicks and check if timer hit 0
+; Read the time left and check whether the timer is done
 Timer_PollStatus:
         IN      TimerValue
         STORE   RemainingTicks
@@ -75,14 +67,11 @@ Timer_PollStatus:
         IN      TimerControl
         AND     TimerDoneMask
         JZERO   TimerNotDone
-        LOAD    P1_One
+        LOAD    One
         STORE   TimerDoneFlag
         RETURN
 
 TimerNotDone:
-        LOAD    P1_Zero
+        LOAD    Zero
         STORE   TimerDoneFlag
         RETURN
-
-P1_Zero: DW      0
-P1_One:  DW      1
