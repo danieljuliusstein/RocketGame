@@ -11,7 +11,6 @@
 ; - Verify register reads/writes on the actual DE10-Lite board
 ; - Make sure Timer_PollStatus extracts DONE (bit 1) correctly
 ; - Confirm that pausing mid-countdown holds time without losing ticks
-; - DONE
 ; 
 ; Integration
 ; - RocketGame.asm defines RemainingTicks and TimerDoneFlag
@@ -22,6 +21,8 @@
 ;
 ; Verification
 ; - Quartus load/pause/readback test passed with 60 ticks
+; - Simulation showed count holding at 3 during pause, continuing after
+;   resume, and returning to 4 after reset
 ; ============================================================
 
 TimerValue:      EQU     &H070
